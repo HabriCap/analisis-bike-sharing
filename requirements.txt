@@ -1,0 +1,5 @@
+numpy>=1.23.5,<3
+pandas>=1.5,<4
+matplotlib>=3.7,<4
+seaborn>=0.12,<1
+streamlit>=1.30,<2
