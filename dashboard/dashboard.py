@@ -28,6 +28,16 @@ TIME_CLUSTER_ORDER = [
     "4. Jam Sibuk Sore (16-19)",
     "5. Malam Hari (20-23)",
 ]
+SEASON_ORDER = ["Spring", "Summer", "Fall", "Winter"]
+WEEKDAY_ORDER = [
+    "Minggu",
+    "Senin",
+    "Selasa",
+    "Rabu",
+    "Kamis",
+    "Jumat",
+    "Sabtu",
+]
 WEATHER_LABELS = {
     "temp_c": "Suhu (°C)",
     "hum_pct": "Kelembapan (%)",
@@ -88,19 +98,86 @@ if main_df.empty:
     st.info("Tidak ada data untuk rentang tanggal dan musim yang dipilih.")
     st.stop()
 
-metric_columns = st.columns(3)
+metric_columns = st.columns(4)
 metric_columns[0].metric(
     "Total penyewaan",
     f"{main_df['cnt'].sum():,}",
 )
 metric_columns[1].metric(
+    "Rata-rata penyewaan per jam",
+    f"{main_df['cnt'].mean():,.1f}",
+)
+metric_columns[2].metric(
     "Pengguna terdaftar",
     f"{main_df['registered'].sum():,}",
 )
-metric_columns[2].metric(
+metric_columns[3].metric(
     "Pengguna kasual",
     f"{main_df['casual'].sum():,}",
 )
+
+st.divider()
+st.subheader("Ringkasan penyewaan per musim")
+daily_totals = (
+    main_df.groupby(["dteday", "year", "season_label"], as_index=False)["cnt"]
+    .sum()
+)
+season_summary = (
+    daily_totals.groupby(["season_label", "year"], as_index=False)["cnt"]
+    .mean()
+)
+fig0, ax0 = plt.subplots(figsize=(10, 4))
+sns.barplot(
+    data=season_summary,
+    x="season_label",
+    y="cnt",
+    hue="year",
+    order=[season for season in SEASON_ORDER if season in selected_seasons],
+    hue_order=sorted(season_summary["year"].unique()),
+    ax=ax0,
+)
+ax0.set_xlabel("Musim")
+ax0.set_ylabel("Rata-rata penyewaan per hari")
+ax0.set_title("Rata-rata penyewaan harian per musim dan tahun")
+sns.despine(ax=ax0)
+st.pyplot(fig0)
+plt.close(fig0)
+st.caption(
+    "Jumlah penyewaan per jam dijumlahkan per tanggal, lalu dirata-ratakan per hari."
+)
+
+st.divider()
+st.subheader("Heatmap penyewaan berdasarkan hari dan jam")
+st.caption(
+    "Warna menunjukkan rata-rata penyewaan per jam pada hari dalam minggu yang dipilih. "
+    "Hari dan jam tanpa observasi pada filter aktif ditampilkan kosong."
+)
+hourly_heatmap = (
+    main_df.groupby(["weekday", "hr"])["cnt"]
+    .mean()
+    .unstack("hr")
+    .reindex(index=range(7), columns=range(24))
+)
+hourly_heatmap.index = WEEKDAY_ORDER
+fig_heatmap, ax_heatmap = plt.subplots(figsize=(14, 4.5))
+sns.heatmap(
+    hourly_heatmap,
+    cmap="YlGnBu",
+    linewidths=0.3,
+    linecolor="white",
+    cbar_kws={"label": "Rata-rata penyewaan per jam"},
+    ax=ax_heatmap,
+)
+ax_heatmap.set_xlabel("Jam")
+ax_heatmap.set_ylabel("Hari")
+ax_heatmap.set_xticks(
+    [hour + 0.5 for hour in range(24)],
+    [f"{hour:02d}:00" for hour in range(24)],
+    rotation=0,
+)
+sns.despine(ax=ax_heatmap, left=True, bottom=True)
+st.pyplot(fig_heatmap)
+plt.close(fig_heatmap)
 
 st.divider()
 st.subheader("1. Perbandingan penyewaan pada jam sibuk hari kerja")
@@ -113,6 +190,7 @@ q1_df = main_df.loc[
     (main_df["workingday"] == 1) & main_df["hr"].isin([8, 17])
 ]
 q1_summary = q1_df.groupby(["year", "hr"], as_index=False)["cnt"].mean()
+growth_by_hour = {}
 
 if q1_summary.empty:
     st.info("Tidak ada data jam sibuk hari kerja pada filter yang dipilih.")
@@ -134,6 +212,7 @@ else:
             growth = (
                 q1_pivot.loc[hour, 2012] - q1_pivot.loc[hour, 2011]
             ) / q1_pivot.loc[hour, 2011] * 100
+            growth_by_hour[hour] = growth
             column.metric(f"Kenaikan pukul {hour:02d}:00", f"{growth:+.2f}%")
     else:
         st.info("Pilih periode yang mencakup data 2011 dan 2012 untuk melihat persentase kenaikan.")
@@ -282,3 +361,50 @@ fig4.set_axis_labels("Klaster waktu", "Rata-rata penyewaan")
 fig4.tick_params(axis="x", rotation=20)
 st.pyplot(fig4.fig)
 plt.close(fig4.fig)
+
+st.divider()
+st.subheader("Kesimpulan dan tindak lanjut")
+recommendations = []
+for hour, growth in sorted(growth_by_hour.items()):
+    direction = "naik" if growth >= 0 else "turun"
+    recommendations.append(
+        f"Pada pukul {hour:02d}:00, rata-rata penyewaan {direction} "
+        f"{abs(growth):.2f}% dari 2011 ke 2012 pada filter aktif. "
+        "Gunakan perubahan ini untuk mengevaluasi kebutuhan armada di jam tersebut."
+    )
+
+if not q2_df.empty:
+    weather_correlation = (
+        q2_df[list(WEATHER_LABELS) + ["casual"]]
+        .corr()["casual"]
+        .drop("casual")
+        .dropna()
+    )
+    negative_weather_correlation = weather_correlation[weather_correlation < 0]
+    if not negative_weather_correlation.empty:
+        feature = negative_weather_correlation.idxmin()
+        recommendations.append(
+            f"{WEATHER_LABELS[feature]} memiliki korelasi negatif terkuat "
+            f"dengan pengguna kasual (r = {negative_weather_correlation[feature]:.2f}) "
+            "pada akhir pekan/libur. Uji promosi yang relevan dan ukur dampaknya; "
+            "korelasi ini tidak membuktikan hubungan sebab-akibat."
+        )
+
+if not cluster_summary.empty:
+    weekend_casual = cluster_summary.loc[
+        cluster_summary["day_type"] == "Akhir Pekan/Libur"
+    ]
+    if not weekend_casual.empty:
+        peak = weekend_casual.loc[weekend_casual["casual"].idxmax()]
+        recommendations.append(
+            f"Pengguna kasual akhir pekan/libur paling ramai pada "
+            f"{peak['time_cluster'].split('. ', 1)[-1].lower()} "
+            f"(rata-rata {peak['casual']:.1f} penyewaan per jam). "
+            "Pertimbangkan penempatan sepeda dan promosi pada periode tersebut."
+        )
+
+if recommendations:
+    for recommendation in recommendations:
+        st.markdown(f"- {recommendation}")
+else:
+    st.info("Belum cukup data pada filter aktif untuk menyusun tindak lanjut.")
